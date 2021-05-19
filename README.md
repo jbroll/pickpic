@@ -6,9 +6,9 @@ PickPic allows a directory full of jpegs to be quickly triaged.  Set up
 'source' directory.  A page full of thumbnails is displayed in a browser.
 Clicking on an image shows that image full frame.  Arrow keys can be used to
 move forward and back in the sorted image list.  Pressing 's' saves an image to
-the 'target' directory.  Beware pressing 'd' deletes the image from 'source'.
-This can be used to save most images in source, quickly deleting junk images
-and moving nice images to target.
+the 'target' directory.  Beware pressing 'd', that deletes the image from 'source'.
+These key bindings can be used to save most images in source, quickly deleting
+junk images and moving nice images to target.
 
 Picpic uses a patched version of the [Wapp](https://github.com/jbroll/wapp)
 web app framework for Tcl.  It's not packaged particularly well just now.
