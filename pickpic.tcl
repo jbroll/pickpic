@@ -2,7 +2,7 @@
 #
 set HOME $::env(HOME)
 
-source $HOME/.pickpic
+source $HOME/.pickpic               ; # Not UnSourced
 
 set root [file dirname [file normalize [info script]]]
 
@@ -81,4 +81,7 @@ proc wapp-default {} {
   }
 }
 
+try {
+    exec camera-sync
+}
 wapp-start $argv

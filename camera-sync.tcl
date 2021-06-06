@@ -44,4 +44,3 @@ proc camera-sync {} {
 if { [file rootname [file tail $argv0]] eq "camera-sync" } {
     camera-sync
 }
-
