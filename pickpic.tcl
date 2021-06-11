@@ -81,7 +81,13 @@ proc wapp-default {} {
   }
 }
 
-try {
-    exec camera-sync
+while { 1 } {
+    try {
+        exec camera-sync
+        break
+    } on error e {
+        puts "[lindex [split $e \n] 0] : Waiting patiently"
+        after 5000
+    }
 }
 wapp-start $argv

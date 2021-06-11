@@ -15,8 +15,8 @@ proc echo { string { redirector - } { file - } { mode {} } } {
     if { [string compare $file -] } { close $fp }
 }
 
-proc camera-sync {} {
-    foreach keyvalues [split [string map { = " " } [exec gphoto2 -q --list-files --parsable]] "\n"] {
+proc camera-sync { start target } {
+    foreach keyvalues [split [string map { = " " } [exec gphoto2 -q --list-files --parsable 2> /dev/null]] "\n"] {
         dict update keyvalues FILENAME camera_path FILEMTIME time {}
 
         set file [file tail $camera_path]
@@ -31,16 +31,22 @@ proc camera-sync {} {
         } else {
             puts "get  $file"
             exec gphoto2 --get-file $camera_path --filename=$file_path
+
             echo [subst {
-    # Config for b3sync.tcl
+    # Config for camera-syc
     #
     set start $numb
     set target $target
-            }] > $HOME/.camera-sync
+            }] > $::HOME/.camera-sync
         }
     }
 }
 
 if { [file rootname [file tail $argv0]] eq "camera-sync" } {
-    camera-sync
+	try {
+		camera-sync $start $target
+	} on error e {
+        puts stderr "Error syncing camera : check USB connection"
+		exit 1
+	}
 }
