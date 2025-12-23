@@ -24,7 +24,6 @@ set root [file dirname [file normalize [info script]]]
 #
 #   (2)  Indentifiers intended for internal use only begin with "wappInt"
 #
-package require Tcl 8.6
 
 proc wappInt-cookies-parse {cstr} {
   set c [dict create]
@@ -1131,8 +1130,6 @@ proc wapp-static { root { page {} } { browse nobrowse } } {
     }]
 }
 
-
-package require Thread
 
 proc wapp-deliver-file-content { wapp chan } {
     set mimetype [dict get $wapp .mimetype]
