@@ -24,6 +24,31 @@ set root [file dirname [file normalize [info script]]]
 #
 #   (2)  Indentifiers intended for internal use only begin with "wappInt"
 #
+package require Tcl 8.6-
+
+set WAPP_LOGLEVELS { alert error warn info verbose debug }
+proc wapp-log-level-lookup { level } {
+    return [lsearch $::WAPP_LOGLEVELS $level]
+}
+
+set WAPP_LOG_APPNAME [file rootname [file tail $::argv0]]
+set WAPP_LOGLEVEL info
+set WAPP_LOGLEVEL_VALUE [wapp-log-level-lookup $::WAPP_LOGLEVEL]
+
+proc wapp-log-level { level } {
+    set ::WAPP_LOGLEVEL $level
+    set ::WAPP_LOGLEVEL_VALUE [wapp-log-level-lookup $::WAPP_LOGLEVEL]
+}
+proc wapp-log-line { line } {
+    puts stderr $line
+}
+proc wapp-log { level msg } {
+    set value [wapp-log-level-lookup $level]
+
+    if { $::WAPP_LOGLEVEL_VALUE >= $value } {
+	wapp-log-line "[clock format [clock seconds]] $level $msg"
+    }
+}
 
 proc wappInt-cookies-parse {cstr} {
   set c [dict create]
@@ -31,7 +56,7 @@ proc wappInt-cookies-parse {cstr} {
   while {$cstr ne ""} {
     set idxs [regexp -indices -inline {^\s*([^\s=]+)\s*=\s*(?:"([^"]*)"|([^";][^;]*)|)(?:\s*;\s*)?} $cstr]
     if {[llength $idxs] == 0} {
-      puts stderr "cookie parse error for: '$cstr'"
+      wapp-log error "cookie parse error for: '$cstr'"
       return $c
     }
     set name [string range $cstr [lindex $idxs 1 0] [lindex $idxs 1 1]]
@@ -245,18 +270,19 @@ proc wapp-reply-code {x} {
 
 # Set a cookie
 #
-proc wapp-set-cookie {name value} {
+proc wapp-set-cookie {name value { maxage Session } } {
   global wapp
   if {![regexp {^[]!#$%&'()*+./:0-9<=>?@A-Z[^_`a-z{|}~-]+$} $value]} {
     error "Bad cookie value: '$value'"
   }
-  dict lappend wapp .new-cookies $name $value
+  dict lappend wapp .new-cookies $name $value $maxage
 }
 
 # Unset a cookie
 #
 proc wapp-clear-cookie {name} {
-  wapp-set-cookie $name {}
+  global wapp
+  dict lappend wapp .new-cookies $name "" Session
 }
 
 # Add extra entries to the reply header
@@ -408,13 +434,13 @@ proc wappInt-trace {} {}
 #    laddr           Listen on this addr (tcp!ADDR!PORT).  Port 0 means to select
 #                    a port that is not currently in use
 #
-#    wappmode        One of "scgi", "remote-scgi", "server", or "local".
+#    wappmode        One of "scgi", "server", or "local".
 #
 #    fromip          If not {}, then reject all requests from IP addresses
 #                    other than $fromip
 #
 proc wappInt-start-listener {laddr wappmode fromip} {
-  if {[string match *scgi $wappmode]} {
+  if {[string eq scgi $wappmode]} {
     set type SCGI
     set server [list wappInt-new-connection \
                 wappInt-scgi-readable $wappmode $fromip]
@@ -423,40 +449,38 @@ proc wappInt-start-listener {laddr wappmode fromip} {
     set server [list wappInt-new-connection \
                 wappInt-http-readable $wappmode $fromip]
   }
-  set laddr [split $laddr "!"]
-  switch [llength $laddr] {
-  3 {
-    if {[lindex $laddr 0] ne "tcp"} {
-      error "Listen error: only 'tcp' network is supported now"
-    }
-    set host [lindex $laddr 1]
-    set port [lindex $laddr 2]
-  }
-  2 {
-    if {[lindex $laddr 0] ne "tcp"} {
-      error "Listen error: only 'tcp' network is supported now"
-    }
-    set host [lindex $laddr 1]
-    set port 0
-  }
-  default {
-    set host [lindex $laddr 0]
-    set port 0
-  }
-  }
-  if {$wappmode=="local" || $wappmode=="scgi"} {
-    set x [socket -server $server -myaddr $host $port]
+  # Handle both tcp!ADDR!PORT and ADDR:PORT formats
+  if {[string match "tcp!*" $laddr]} {
+    set parts [split $laddr !]
+    set host [lindex $parts 1]
+    set port [lindex $parts 2]
   } else {
-    set x [socket -server $server -myaddr $host $port]
+  set laddr [split $laddr :]
+  switch [llength $laddr] {
+      2 {
+        set host [lindex $laddr 0]
+        set port [lindex $laddr 1]
+      }
+      1 {
+        set host localhost
+        set port [lindex $laddr 0]
+      }
+      default {
+        set host localhost
+        set port 80
+      }
   }
-  set coninfo [chan configure $x -sockname]
+  }
+  set sock [socket -server $server -myaddr $host $port]
+  set coninfo [chan configure $sock -sockname]
   set port [lindex $coninfo 2]
+
   if {$wappmode=="local"} {
     wappInt-start-browser http://$host:$port/
   } elseif {$fromip!=""} {
-    puts "Listening for $type requests on $host:$port from IP $fromip"
+    wapp-log info "Listening for $type requests on $host:$port from IP $fromip"
   } else {
-    puts "Listening for $type requests on $host:$port"
+    wapp-log info "Listening for $type requests on $host:$port"
   }
 }
 
@@ -508,7 +532,8 @@ proc wappInt-close-channel {chan} {
 #
 proc wappInt-http-readable {chan} {
   if {[catch [list wappInt-http-readable-unsafe $chan] msg]} {
-    puts stderr "$msg\n$::errorInfo"
+    wapp-log error $msg
+    wapp-log debug $::errorInfo
     wappInt-close-channel $chan
   }
 }
@@ -580,7 +605,7 @@ proc wappInt-parse-header {chan} {
   if {$hdr==""} {return 1}
   set req [lindex $hdr 0]
   dict set W REQUEST_METHOD [set method [lindex $req 0]]
-  if {[lsearch -exact {GET HEAD POST PUT PATCH DELETE} $method]<0} {
+  if {[lsearch -exact {GET HEAD POST PUT PATCH DELETE OPTIONS} $method]<0} {
     error "unsupported request method: \"[dict get $W REQUEST_METHOD]\""
   }
   set uri [lindex $req 1]
@@ -781,7 +806,7 @@ proc wappInt-handle-request-unsafe {chan} {
     }
   } msg]} {
     if {[wapp-param WAPP_MODE]=="local" || [wapp-param WAPP_MODE]=="server"} {
-      puts "ERROR: $::errorInfo"
+      wapp-log error $::errorInfo"
     }
     wapp-reset
     wapp-reply-code "500 Internal Server Error"
@@ -811,28 +836,36 @@ proc wappInt-handle-request-unsafe {chan} {
     puts $chan "Content-Security-Policy: [dict get $wapp .csp]\r"
   }
   if {[dict exists $wapp .new-cookies]} {
-    foreach {nm val} [dict get $wapp .new-cookies] {
+    foreach {nm val age} [dict get $wapp .new-cookies] {
       if {[regexp {^[a-z][-a-z0-9_]*$} $nm]} {
         if {$val==""} {
-          puts $chan "Set-Cookie: $nm=; HttpOnly; Path=/; Max-Age=1\r"
+          puts $chan "Set-Cookie: $nm=; HttpOnly; Path=/; Max-Age=1; SameSite=Lax;\r"
         } else {
+          if { $age ne "Session" } {
+            set maxage "Max-Age=$age;"
+          } else {
+            set maxage ""
+          }
           set val $val
-          puts $chan "Set-Cookie: $nm=$val; HttpOnly; Path=/\r"
+          puts $chan "Set-Cookie: $nm=$val; HttpOnly; Path=/; $maxage SameSite=Lax;\r"
         }
       }
     }
   }
 
   wapp-write-content $wapp $chan
+  wappInt-close-channel $chan
 }
 
 proc wapp-write-content { wapp chan } {
+  set mimetype [dict get $wapp .mimetype]
+
   if {[dict exists $wapp .filepath]} {
-      wapp-deliver-file-content $wapp $chan
-      return
+      set filepath [dict get $wapp .filepath]
+      set contentLength [file size $filepath]
+      set inchan [open $filepath rb]
   } else {
-      set mimetype [dict get $wapp .mimetype]
-      if {[string match text/* $mimetype]} {
+      if {[string match text/* $mimetype] || $mimetype eq "application/json" } {
         set reply [encoding convertto utf-8 [dict get $wapp .reply]]
         if {[regexp {\ygzip\y} [wapp-param HTTP_ACCEPT_ENCODING]]} {
           catch {
@@ -845,28 +878,18 @@ proc wapp-write-content { wapp chan } {
         set reply [dict get $wapp .reply]
       }
       set contentLength [string length $reply]
-      puts $chan "Content-Type: $mimetype\r"
-      puts $chan "Content-Length: $contentLength\r"
-      puts $chan \r
-
-      puts -nonewline $chan $reply
-      flush $chan
-      wappInt-close-channel $chan
   }
-}
+  puts $chan "Content-Type: $mimetype\r"
+  puts $chan "Content-Length: $contentLength\r"
+  puts $chan \r
 
-proc wapp-deliver-file-content { wapp chan } {
-    set mimetype [dict get $wapp .mimetype]
-    set filepath [dict get $wapp .filepath]
-    set contentLength [file size $filepath]
-    set inchan [open $filepath rb]
-    puts $chan "Content-Type: $mimetype\r"
-    puts $chan "Content-Length: $contentLength\r"
-    puts $chan \r
-    fcopy $inchan $chan
-    flush $chan
-    close $inchan
-    wappInt-close-channel $chan
+  if {[dict exists $wapp .filepath]} {
+      fcopy $inchan $chan
+      close $inchan
+  } else {
+      puts -nonewline $chan $reply
+  }
+  flush $chan
 }
 
 # This routine runs just prior to request-handler dispatch.  The
@@ -897,7 +920,8 @@ proc wappInt-handle-cgi-request {} {
 #
 proc wappInt-scgi-readable {chan} {
   if {[catch [list wappInt-scgi-readable-unsafe $chan] msg]} {
-    puts stderr "$msg\n$::errorInfo"
+    wapp-log error $msg
+    wapp-log debug $::errorInfo
     wappInt-close-channel $chan
   }
 }
@@ -959,8 +983,6 @@ proc wappInt-scgi-readable-unsafe {chan} {
 #
 #    -scgi $PORT           Listen for SCGI requests on 127.0.0.1:$PORT
 #
-#    -remote-scgi $PORT    Listen for SCGI requests on TCP port $PORT
-#
 #    -cgi                  Handle a single CGI request
 #
 # With no arguments, the behavior is called "auto".  In "auto" mode,
@@ -990,7 +1012,7 @@ proc wappInt-scgi-readable-unsafe {chan} {
 proc wapp-start {arglist} {
   global env
   set mode auto
-  set laddr "tcp!127.0.0.1!0"
+  set laddr "127.0.0.1:80"
   set nowait 0
   set fromip {}
   set n [llength $arglist]
@@ -1013,11 +1035,6 @@ proc wapp-start {arglist} {
         incr i;
         set mode "scgi"
         set fromip 127.0.0.1
-        set laddr "tcp!127.0.0.1![lindex $arglist $i]"
-      }
-      -remote-scgi {
-        incr i;
-        set mode "remote-scgi"
         set laddr "tcp!127.0.0.1![lindex $arglist $i]"
       }
       -cgi {
@@ -1085,9 +1102,11 @@ package provide wapp 1.0
 set wapp-static-mimetypes {
     .css    text/css
     .html   text/html
+    .ico    image/x-icon
     .jpeg   image/jpeg
     .jpg    image/jpeg
     .js     application/javascript
+    .mjs    application/javascript
     .png    image/jpeg
     .svg    image/svg+xml
     .txt    text/plain
@@ -1130,29 +1149,6 @@ proc wapp-static { root { page {} } { browse nobrowse } } {
     }]
 }
 
-
-proc wapp-deliver-file-content { wapp chan } {
-    set mimetype [dict get $wapp .mimetype]
-    set filepath [dict get $wapp .filepath]
-
-    thread::detach $chan
-
-    thread::create [subst -nocommands {
-        thread::attach $chan
-        
-        set contentLength [file size $filepath]
-        set inchan [open $filepath rb]
-        puts $chan "Content-Type: $mimetype\r"
-        puts $chan "Content-Length: \$contentLength\r"
-        puts $chan "\r"
-        fcopy \$inchan $chan
-        close \$inchan
-        flush $chan
-        close $chan
-    }]
-}
-
-
 # Simple notation for wapp-page-$page handler generation.
 #
 # wapp-route [GET|PUT|DELETE|...] /page[/value1[/value2]] [param1 .. paramN] handlerBody
@@ -1162,12 +1158,17 @@ proc wapp-deliver-file-content { wapp chan } {
 # still available using [wapp-param PATH_TAIL].  Additional parameters are
 # unpacked with [wapp-param] into local variables.
 #
+# Override-able dispatch hooks (defaults below). See README.
+proc wapp-route-filter   { page } { return 1 }
+proc wapp-route-notfound { page } { wapp-reply-code "404 Page Not Found" }
+
 proc wapp-route-dispatch { page } {
+    if { ![wapp-route-filter $page] } return
     set REQUEST_METHOD [wapp-param REQUEST_METHOD]
     if { [info command wapp-page-$page-$REQUEST_METHOD] ne "" } {
         wapp-page-$page-$REQUEST_METHOD
     } else {
-        wapp-reply-code "404 Page Not Found"
+        wapp-route-notfound $page
     }
 }
 
@@ -1179,8 +1180,11 @@ proc wapp-route { method pathspec args } {
     if { [llength $names] } {
         append prefix "    set PATH_TAIL \[lassign \[split \[wapp-param PATH_TAIL] /] $names]\n"
     }
-    foreach arg $args {
-        append prefix "    set $arg \[wapp-param $arg]\n"
+    if { [llength $args] } {
+        append  prefix "wapp-allow-xorigin-params\n"
+        foreach arg $args {
+            append prefix "    set $arg \[wapp-param $arg]\n"
+        }
     }
 
     proc wapp-page-$page-$method {} "\n$prefix $body"

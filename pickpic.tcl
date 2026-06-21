@@ -8,7 +8,6 @@ set root [file dirname [file normalize [info script]]]
 
 source ../wapp/wapp.tcl
 source ../wapp/wapp-static.tcl
-source ../wapp/wapp-thread.tcl
 source ../wapp/wapp-routes.tcl
 
 package require jbr::print
